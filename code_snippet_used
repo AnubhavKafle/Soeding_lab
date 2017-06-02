@@ -1,0 +1,6 @@
+Soeding_lab
+
+grep -Fxvf rs_id_binary.txt rs_id_quant.txt | wc -l
+2093
+anubhavk@tejas:~/Desktop$ grep -Fxvf rs_id_quant.txt rs_id_binary.txt | wc -l
+0
