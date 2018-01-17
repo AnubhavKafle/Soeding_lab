@@ -1,191 +1,284 @@
-//LASSO regularized multivariate linear regression using MLPack
+/*
+ * =====================================================================================
+ *
+ *       Filename:  mlpack_lasso.cpp
+ *
+ *    Description:  Python interface for LASSO linear regression in C++ using MLPACK
+ *
+ *        Version:  1.0
+ *        Created:  10.01.2018 17:16:27
+ *       Revision:  none
+ *       Compiler:  gcc
+ *
+ *         Author:  Saikat Banerjee (banskt), bnrj.saikat@gmail.com, Anubhav Kaphle, anubhavkaphle@gmail.com
+ *   Organization:  Max Planck Institute for Biophysical Chemistry
+ *
+ * =====================================================================================
+ */
+
 #define DLLEXPORT extern "C"
-#include <iostream>
+
 #include <mlpack/core.hpp>
 #include <mlpack/methods/lars/lars.hpp>
-#include <armadillo>
-#include <math.h>
-#include <mlpack/core/cv/metrics/mse.hpp>
-#include <mlpack/core/cv/metrics/accuracy.hpp>
-#include <mlpack/core/cv/simple_cv.hpp>
-#include <mlpack/core/hpt/cv_function.hpp>
-#include <mlpack/core/hpt/fixed.hpp>
-#include <mlpack/core/hpt/hpt.hpp>
-#include <mlpack/core/optimizers/grid_search/grid_search.hpp>
-#include <time.h>
+//#include <armadillo>
+//#include <stdio>
 
-
-using namespace arma;
+using namespace std;
 using namespace mlpack;
-using namespace mlpack::cv;
-using namespace mlpack::hpt;
-using namespace mlpack::optimization;
 using namespace mlpack::regression;
 
 
-float likelihood_ratio_test(double* expr, vec beta,vec response,int sample,int ngene)
+/* 
+ * ===  FUNCTION  ======================================================================
+ *         Name:  fit
+ *  Description:  Train a model with a given lambda and find the coefficients 
+ * =====================================================================================
+ */
+DLLEXPORT
+    bool
+fit ( double* target, double* predictor, int npred, int nsample, double lambda, double* model_betas )
 {
+    arma::mat row_major_data = arma::mat(predictor, nsample, npred);
+    arma::rowvec response = arma::rowvec(target, nsample);
+    arma::vec betas = arma::vec(model_betas, npred);
 
-	float LLR = 0.0;
-	float sum = 0.0;
-	float deflection = 0.0;
+    //cout << row_major_data << endl;
 
-	for ( int s=0; s < sample; s++) 
-	{
-	    sum = sum+response[s];
-	}
+    bool useCholesky = true; 
+    double lambda1 = lambda;
+    double lambda2 = 0.0; // LASSO
+    double tolerance = 1e-16;
 
-	float mean = sum/sample;
+    LARS mylasso(useCholesky, lambda1, lambda2);
+    mylasso.Train(row_major_data, response, betas, false);
 
-	for ( int s=0; s < sample; s++) 
-	{
-		deflection = deflection + pow((response[s] - mean),2);
+    for (int i = 0; i < npred; i++) {
+        model_betas[i] = betas[i];
+    }
+    printf ("\n");
 
+    return true;
+}        /* -----  end of function fit  ----- */
+
+
+/* 
+ * ===  FUNCTION  ======================================================================
+ *         Name:  LLR_calc
+ *  Description:  calculate log likelihood ratio calculation between two models from Lasso
+ * =====================================================================================
+ */
+
+    float 
+LLR_calc ( double * expr, arma::vec & beta, arma::rowvec & response, int nsample, int ngene, double & intercept )
+{
+    float LLR = 0.0;
+    float sum = 0.0;
+    float deflection = 0.0;
+
+    for ( int s=0; s < nsample; s++)
+    {
+        sum = sum+response[s];
+    }
+    float mean = sum/nsample;
+    for ( int s=0; s < nsample; s++)
+    {
+        deflection = deflection + pow((response[s] - mean),2);
         //deflection = deflection + ss;
-	}
+    }
+    float variance = deflection/nsample;
+    for ( int i =0; i < nsample; i++)
+    {
+        float sample_effect = 0.0;
+        for (int j=0; j<ngene; j++)
+        {
+            //int remainder = beta[j]*100;
+            if(beta[j] != 0.00)
+            {
+                sample_effect = sample_effect + beta[j]*expr[(j*nsample+i)];  
+            }
+        }       
+        //float residual  = (pow(response[i],2) - pow(response[i] - sample_effect,2))/variance;
+    float residual = pow(response[i] - sample_effect - intercept,2);
+    LLR = LLR+residual;  
 
-	float variance = deflection/sample;
-
-	for ( int i =0; i < sample; i++)
-	{
-	    
-	    float sample_effect = 0.0;
-
-		for (int j=0; j<ngene; j++)
-		{
-
-			int remainder = beta[j]*1000;
-
-			if(remainder%10 != 0)
-			{
-
-				sample_effect = sample_effect + beta[j]*expr[(j*sample+i)];  
-
-       		}
-
-       	}
-       		
-       	float residual  = (pow(response[i],2) - pow(response[i] - sample_effect,2))/variance;
-
-       	LLR = LLR+residual;
-
-	}
-
-	LLR = LLR/2;
-
-	return 1.0/LLR;
-	
+    }
+    LLR = -LLR/variance + nsample;
+    return LLR;                        // This value is -2 * log(likelihood ratio)
 }
 
 
-DLLEXPORT int fit ( double* genotype, double* expression, int nsnps, int ngene, int nsample, double* LLR , double* Beta_indices)//, double* lambdaa) 
-{
-    time_t seconds;
-    seconds = time(NULL);
-    std::cout<<"before lasso"<<std::endl;
-	std::cout << seconds<< std::endl;
-    
-	int i,j,k;
-	int pos;
-	float likeli = 0.0;
-	double *x;
-	//double *y;
-
-	x = (double*) malloc(nsample * sizeof(double));
-	//y = (double*) malloc(ngene* sizeof(double));
-	if ( x == NULL) {
-		printf ( "\ndynamic memory allocation failed\n" );
-		free ( x );
-		//free ( y );
-		exit ( 0 );
-	}
-    
+/* 
+ * ===  FUNCTION  ======================================================================
+ *         Name:  easy_LLR
+ *  Description:  calculate log likelihood ratio calculation between two models from Lasso
+ * =====================================================================================
  
-    mat A = mat(expression,nsample,ngene); 
 
-    mat B = A.t();
-    
-    //std::cout<<size(A.t())<<std::endl;
+    float 
+easy_LLR ( arma::mat & predictors_matrix, arma::vec & beta, arma::rowvec & response, int nsample )
+{
+    float sum = 0.0;
+    float deflection = 0.0;
 
+    for ( int s=0; s < nsample; s++)
+    {
+        sum = sum+response[s];
+    }
+    float mean = sum/nsample;
+    for ( int s=0; s < nsample; s++)
+    {
+        deflection = deflection + pow((response[s] - mean),2);
+        //deflection = deflection + ss;
+    }
+    float variance = deflection/nsample;
+     
+    arma::vec prediction = (predictors_matrix * beta);
+    arma::vec delta = response.t() - prediction;
+    arma::vec LLR = square(delta);
+    double sum_2=0.0;
+    for ( unsigned int i=0; i<nsample;i++){
+        sum_2 = sum_2+LLR[i];
+    } 
+    float LLR_i = sum_2/variance - nsample;
+    return LLR_i;             // This value is -2 * log(likelihood ratio)
+}
+*/
 
-	for (i = 0 ; i < nsnps; i++) 
-	{
-	    // Get the x for regression (ndonor elements)
-	    for (j = 0; j < nsample; j++)
-	    {
-	        x[j] = genotype[i * nsample + j];
-	    }
+/* 
+ * ===  FUNCTION  ======================================================================
+ *         Name:  mean_square_error_prediction
+ *  Description:  Find the mean square error between fitted model and true data
+ * =====================================================================================
+ */
+    double
+mean_square_error_prediction (arma::mat & row_major_data_3, arma::rowvec &response, int nsample, arma::vec &betas, double & intercept)
+{
+    arma::vec prediction = (row_major_data_3 * betas) + intercept;
+    arma::vec delta = response.t() - prediction;
+    double mse = sum(square(delta)) / nsample;
 
-	    // For G genes, calculate F-statistic
-	        /* for all the genes fitting a linear regression with LASSO regularization 
-	         */
-
-	      // Need to take care of the bias value from the python 
-
-	    rowvec response = Row<double>(x, nsample); // for cross validation 
-
-	
-
-	    vec response1 = vec(x,nsample);
-
-	   
-	    //vec beta = vec(ngene);
-	    vec Beta = vec(Beta_indices+(i*ngene),ngene,false);
-
-		// The hyper-parameter tuner should not try to change the transposeData or
-		// useCholesky parameters.
-
-		//bool transposeData = true;
-
-		bool useCholesky = false;
-
-		// We wish only to search for the best lambda1 and lambda2 values.
-		arma::vec lambda1Set("0 0.001 0.01 0.1 1.0 10");
-		//arma::vec lambda1Set("1.00000000e-04 1.32035178e-04 1.74332882e-04 2.30180731e-04   3.03919538e-04   4.01280703e-04 5.29831691e-04   6.99564216e-04   9.23670857e-04 1.21957046e-03   1.61026203e-03   2.12611233e-03 2.80721620e-03   3.70651291e-03   4.89390092e-03 6.46167079e-03   8.53167852e-03   1.12648169e-02 1.48735211e-02   1.96382800e-02   2.59294380e-02 3.42359796e-02   4.52035366e-02   5.96845700e-02 7.88046282e-02   1.04049831e-01   1.37382380e-01 1.81393069e-01   2.39502662e-01   3.16227766e-01");
-		//arma::vec lambda1Set("3.16227766e-01 2.39502662e-01 1.81393069e-01 1.37382380e-01 1.04049831e-01 7.88046282e-02 5.96845700e-02 4.52035366e-02 3.42359796e-02 2.59294380e-02 1.96382800e-02 1.48735211e-02 1.12648169e-02 8.53167852e-03 6.46167079e-03 4.89390092e-03 3.70651291e-03 2.80721620e-03 2.12611233e-03 1.61026203e-03 1.21957046e-03 9.23670857e-04 6.99564216e-04 5.29831691e-04 4.01280703e-04 3.03919538e-04 2.30180731e-04 1.74332882e-04 1.32035178e-04 1.00000000e-04");
-		arma::vec lambda2Set("0.0 0.0 0.0");
-
-	    double bestLambda1, bestLambda2; 
-
-	    HyperParameterTuner<LARS, MSE, SimpleCV> hpt2(0.4, B, response);
-
-	 	std::tie(bestLambda1,bestLambda2) = hpt2.Optimize(Fixed(true),Fixed(useCholesky), lambda1Set,lambda2Set);
-
-
-	    LARS lasso(true, bestLambda1);  // use cholesky using best lambda from validation 
-
-	    lasso.Train(A,response1, Beta, false);
-         
-        printf ( "Lasso training complete.\n" );
-
-        //cout << __TIMESTAMP__ << endl;
-
-	    likeli = likelihood_ratio_test(expression,Beta,response1,nsample,ngene);
-        
-        printf ( "Likelihood ratio test done.\n" );
-
-        printf ("Value of lambdaa from python: %f \n", lambdaa[0]);
-
-        //cout<<lambdaa[0]<<endl;
-
-        //lambdaa[0] = bestLambda1;
-
-        //cout<<lambdaa[0]<<endl;
-        //printf ("Value of updated best lambda: %f \n", lambdaa[0]);
-       // printf ("Function ends here. \n");
-
-
-	    LLR[i] = likeli; 
-        
-	}
-
-    //printf ("%g\n", LLR[0]);
-    seconds = time(NULL);
-    std::cout<<"after lasso"<<std::endl;
-	std::cout << seconds << std::endl;
-
-	free ( x );
-	//x = NULL;
-	return 0;
+    return mse;
 
 }
+
+/* 
+ * ===  FUNCTION  ======================================================================
+ *         Name:  lasso_lars
+ *  Description:  Peform a LASSO regresion using LARS method given a lambda.
+ *                It uses the LARS implementation of mlpack.
+ * =====================================================================================
+ */
+    arma::vec
+lasso_lars ( arma::mat & row_major_data_2, int npred, arma::rowvec &response, double lambda )
+{
+
+    bool useCholesky = false; 
+    double lambda1 = lambda;
+    double lambda2 = 0.0;
+    arma::vec betas = arma::vec(npred); 
+
+    LARS mylasso(useCholesky, lambda1, lambda2);
+    mylasso.Train(row_major_data_2, response, betas, false);
+
+    return betas;
+}        /* -----  end of function lasso_lars  ----- */
+
+
+/* 
+ * ===  FUNCTION  ======================================================================
+ *         Name:  cross_validation_2fold
+ *  Description:  Perform cross validation to find the best lambda
+ *                To do: save betas ??
+ * =====================================================================================
+ */
+        void
+cross_validation_2fold ( arma::mat &row_major_data_1, int npred, arma::rowvec &response, int nsample, double* lambdas, int nlambda, double* cv_mse, double &best_lambda, arma::vec &best_betas, double & best_intercept )
+{
+
+    double best_mse;
+
+    int ntrain    = nsample * 0.7 ;
+    int nvalidate = nsample - ntrain;
+    arma::mat x_train       = arma::mat(ntrain, npred);
+    arma::mat x_validate    = arma::mat(nvalidate, npred);
+    arma::rowvec y_train    = arma::rowvec(ntrain);
+    arma::rowvec y_validate = arma::rowvec(nvalidate);
+
+    for(unsigned int i = 0; i < nsample; i++)
+    {
+        if (i < ntrain)
+        {
+            //cout<<i<<endl;
+            x_train.row(i) = row_major_data_1.row(i);
+            y_train[i] = response[i];
+        }
+        else
+        {
+            //cout<<"Test"<<i<<endl;
+            x_validate.row(i - ntrain) = row_major_data_1.row(i);
+            y_validate[i - ntrain] = response[i];
+            //cout<<x.row(i)<<endl;
+        }
+    }
+
+    for (unsigned int i = 0; i < nlambda; i++) 
+    {
+        arma::rowvec xmean = mean(x_train);
+        arma::mat x_train_scaled = x_train.each_row() - xmean;
+        arma::rowvec y_train_scaled = y_train - mean(y_train);
+        //arma::rowvec y_validate_scaled = y_validate - mean(y_validate);
+        arma::vec betas = lasso_lars (x_train_scaled, npred, y_train_scaled, lambdas[i]);
+        double intercept = (mean(y_train) - (xmean * betas)).eval()(0,0);
+        //xmean = mean(x_validate);
+        //arma::mat x_validate_scaled = x_validate.each_row() - xmean;   # there is no need to scale validation set as intercept is already calculated 
+        double mse = mean_square_error_prediction (x_validate, y_validate, nvalidate, betas, intercept);
+        cv_mse[i] = mse;
+        
+        if ( i == 0 ) {
+
+            best_mse = mse;
+            best_lambda = lambdas[i];
+            best_betas = betas[i];
+            best_intercept = intercept;
+        }
+        
+        if ( mse < best_mse ) {
+            best_mse = mse;
+            best_lambda = lambdas[i];
+            best_betas = betas;
+            best_intercept = intercept;
+        }
+    }
+
+
+    return ;
+}        /* -----  end of function cross_validation_2fold  ----- */
+
+
+/* 
+ * ===  FUNCTION  ======================================================================
+ *         Name:  cvfold2
+ *  Description:  
+ * =====================================================================================
+ */
+DLLEXPORT
+        bool
+cvfold2 (  double* target, double* predictor, int npred, int nsample, double* lambdas, int nlambda, double* cv_mse, double* best_lambda, double* model_betas )
+{
+    arma::mat row_major_data = arma::mat(predictor, nsample, npred);
+    arma::rowvec response = arma::rowvec(target, nsample);
+    arma::vec best_betas = arma::vec(model_betas, npred);
+    double my_best_lambda;
+    double my_bst_intercept;
+    cross_validation_2fold ( row_major_data, npred, response, nsample, lambdas, nlambda, cv_mse, my_best_lambda, best_betas, my_bst_intercept);
+    best_lambda[0] = my_bst_intercept;
+    for (unsigned int i = 0; i < npred; i++) {
+        model_betas[i] = best_betas[i];
+    }
+    double LLR = LLR_calc(predictor, best_betas, response, nsample, npred, my_bst_intercept);
+    //double LLR = easy_LLR(row_major_data, best_betas, response, nsample);
+    cout<<LLR<<endl;
+    return true;
+}        /* -----  end of function cvfold2  ----- */
+
+
